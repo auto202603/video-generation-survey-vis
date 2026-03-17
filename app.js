@@ -5,7 +5,7 @@
 
 // ===================== CONFIG =====================
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v7';
+const CACHE_KEY = 'vgs_data_v8';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const STARS_CACHE_KEY = 'vgs_stars_v1'; // repo -> starCount map
@@ -144,10 +144,21 @@ function parseMd(text, category) {
 
 // ===================== FETCH DATA =====================
 async function fetchAllData(forceRefresh = false) {
-  // Load stars cache into memory
+  // Load stars cache: first try localStorage, then fallback to bundled stars.json
   try {
     const sc = localStorage.getItem(STARS_CACHE_KEY);
-    if (sc) starCacheMap = JSON.parse(sc);
+    if (sc) {
+      starCacheMap = JSON.parse(sc);
+    } else {
+      // Load pre-built star cache shipped with the site
+      try {
+        const resp = await fetch('./stars.json');
+        if (resp.ok) {
+          starCacheMap = await resp.json();
+          localStorage.setItem(STARS_CACHE_KEY, JSON.stringify(starCacheMap));
+        }
+      } catch(e2) { /* ignore, will fetch on sync */ }
+    }
   } catch(e) { starCacheMap = {}; }
 
   // Try cache first
