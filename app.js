@@ -4,8 +4,8 @@
  */
 
 // ===================== CONFIG =====================
-const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/auto202603/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v2';
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
+const CACHE_KEY = 'vgs_data_v3';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -173,11 +173,46 @@ async function fetchAllData(forceRefresh = false) {
     setProgress(Math.round(((i + 1) / CATEGORIES.length) * 100));
   }
 
+  // Fetch GitHub stars for papers that have star badges
+  await fetchStarsForPapers(results.papers);
+
   // Cache
   localStorage.setItem(CACHE_KEY, JSON.stringify(results));
   localStorage.setItem(CACHE_TS_KEY, String(Date.now()));
 
   return results;
+}
+
+// Fetch real star counts from GitHub API (unauthenticated, 60 req/hr limit)
+// Batches unique repos and updates papers in-place
+async function fetchStarsForPapers(papers) {
+  const repos = [...new Set(papers.filter(p => p.starRepo).map(p => p.starRepo))];
+  // Limit to 50 repos per sync to avoid rate limiting
+  const toFetch = repos.slice(0, 50);
+  const starMap = {};
+
+  await Promise.allSettled(toFetch.map(async repo => {
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}`, {
+        headers: { 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        starMap[repo] = data.stargazers_count || 0;
+      }
+    } catch (e) {
+      // ignore individual failures
+    }
+  }));
+
+  // Update papers with fetched star counts
+  for (const p of papers) {
+    if (p.starRepo && starMap[p.starRepo] !== undefined) {
+      p.stars = starMap[p.starRepo];
+    }
+  }
+
+  console.log(`Fetched stars for ${Object.keys(starMap).length}/${toFetch.length} repos`);
 }
 
 // ===================== RENDER =====================
@@ -253,7 +288,19 @@ function getFilteredPapers() {
   } else if (sortMode === 'date_asc') {
     papers.sort((a, b) => a.dateNum - b.dateNum);
   } else if (sortMode === 'stars_desc') {
-    papers.sort((a, b) => (b.stars === -1 ? -1 : b.stars) - (a.stars === -1 ? -1 : a.stars));
+    // papers with no star badge go to the end; -1 means "has badge but not fetched yet"
+    papers.sort((a, b) => {
+      const sa = a.stars;
+      const sb = b.stars;
+      // no starRepo → very bottom
+      if (!a.starRepo && !b.starRepo) return 0;
+      if (!a.starRepo) return 1;
+      if (!b.starRepo) return -1;
+      // both have repo; -1 = unfetched, treat as 0 for now
+      const va = sa === -1 ? 0 : sa;
+      const vb = sb === -1 ? 0 : sb;
+      return vb - va;
+    });
   }
 
   return papers;
@@ -289,12 +336,6 @@ function renderPaperCard(p) {
       </div>
       <div class="paper-links">
         ${linksHtml}
-        <button class="abstract-toggle" onclick="toggleAbstract('${p.id}')">
-          ▸ Abstract
-        </button>
-      </div>
-      <div class="abstract-area" id="abstract-${p.id}">
-        暂无摘要 — Abstract not available in the source data.
       </div>
     </div>
   `;
@@ -321,13 +362,7 @@ function renderPapers() {
   container.innerHTML = filtered.map(renderPaperCard).join('');
 }
 
-function toggleAbstract(paperId) {
-  const area = document.getElementById(`abstract-${paperId}`);
-  const btn = area?.previousElementSibling?.querySelector('.abstract-toggle');
-  if (!area) return;
-  const isOpen = area.classList.toggle('open');
-  if (btn) btn.textContent = isOpen ? '▾ Abstract' : '▸ Abstract';
-}
+
 
 // ===================== FILTERS =====================
 function toggleCategory(catId) {
