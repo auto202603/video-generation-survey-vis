@@ -5,7 +5,7 @@
 
 // ===================== CONFIG =====================
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v3';
+const CACHE_KEY = 'vgs_data_v4';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -173,7 +173,10 @@ async function fetchAllData(forceRefresh = false) {
     setProgress(Math.round(((i + 1) / CATEGORIES.length) * 100));
   }
 
-  // Fetch GitHub stars for papers that have star badges
+  // Fetch GitHub stars from GitHub API.
+  // This only runs during Sync (forceRefresh=true path).
+  // Results are persisted in localStorage, so normal page loads
+  // read star counts directly from cache without any API calls.
   await fetchStarsForPapers(results.papers);
 
   // Cache
@@ -185,25 +188,40 @@ async function fetchAllData(forceRefresh = false) {
 
 // Fetch real star counts from GitHub API (unauthenticated, 60 req/hr limit)
 // Batches unique repos and updates papers in-place
+// Fetch real star counts from GitHub API.
+// Called ONLY during Sync (forceRefresh=true). Results are stored in the
+// localStorage cache alongside paper data, so subsequent page loads use
+// the cached star values without hitting the API at all.
 async function fetchStarsForPapers(papers) {
   const repos = [...new Set(papers.filter(p => p.starRepo).map(p => p.starRepo))];
-  // Limit to 50 repos per sync to avoid rate limiting
-  const toFetch = repos.slice(0, 50);
   const starMap = {};
+  const BATCH = 20; // concurrent requests per batch
 
-  await Promise.allSettled(toFetch.map(async repo => {
-    try {
-      const resp = await fetch(`https://api.github.com/repos/${repo}`, {
-        headers: { 'Accept': 'application/vnd.github.v3+json' }
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        starMap[repo] = data.stargazers_count || 0;
+  // Process in batches to be polite to the API
+  for (let i = 0; i < repos.length; i += BATCH) {
+    const batch = repos.slice(i, i + BATCH);
+    await Promise.allSettled(batch.map(async repo => {
+      try {
+        const resp = await fetch(`https://api.github.com/repos/${repo}`, {
+          headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          starMap[repo] = data.stargazers_count ?? 0;
+        } else if (resp.status === 403 || resp.status === 429) {
+          // Rate limited — stop fetching
+          console.warn('GitHub API rate limited, stopping star fetch');
+          return;
+        }
+      } catch (e) {
+        // ignore individual failures
       }
-    } catch (e) {
-      // ignore individual failures
+    }));
+    // Small delay between batches to avoid rate limiting
+    if (i + BATCH < repos.length) {
+      await new Promise(r => setTimeout(r, 300));
     }
-  }));
+  }
 
   // Update papers with fetched star counts
   for (const p of papers) {
@@ -212,7 +230,7 @@ async function fetchStarsForPapers(papers) {
     }
   }
 
-  console.log(`Fetched stars for ${Object.keys(starMap).length}/${toFetch.length} repos`);
+  console.log(`Stars fetched: ${Object.keys(starMap).length}/${repos.length} repos`);
 }
 
 // ===================== RENDER =====================
