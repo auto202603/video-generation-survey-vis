@@ -5,7 +5,7 @@
 
 // ===================== CONFIG =====================
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v4';
+const CACHE_KEY = 'vgs_data_v5';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -186,19 +186,18 @@ async function fetchAllData(forceRefresh = false) {
   return results;
 }
 
-// Fetch real star counts from GitHub API (unauthenticated, 60 req/hr limit)
-// Batches unique repos and updates papers in-place
-// Fetch real star counts from GitHub API.
+// Fetch real star counts via GitHub API (unauthenticated, 60 req/hr).
 // Called ONLY during Sync (forceRefresh=true). Results are stored in the
 // localStorage cache alongside paper data, so subsequent page loads use
 // the cached star values without hitting the API at all.
 async function fetchStarsForPapers(papers) {
   const repos = [...new Set(papers.filter(p => p.starRepo).map(p => p.starRepo))];
   const starMap = {};
-  const BATCH = 20; // concurrent requests per batch
+  const BATCH = 15; // concurrent requests per batch
+  let rateLimited = false;
 
-  // Process in batches to be polite to the API
   for (let i = 0; i < repos.length; i += BATCH) {
+    if (rateLimited) break;
     const batch = repos.slice(i, i + BATCH);
     await Promise.allSettled(batch.map(async repo => {
       try {
@@ -207,20 +206,14 @@ async function fetchStarsForPapers(papers) {
         });
         if (resp.ok) {
           const data = await resp.json();
-          starMap[repo] = data.stargazers_count ?? 0;
+          starMap[repo] = typeof data.stargazers_count === 'number' ? data.stargazers_count : 0;
         } else if (resp.status === 403 || resp.status === 429) {
-          // Rate limited — stop fetching
-          console.warn('GitHub API rate limited, stopping star fetch');
-          return;
+          rateLimited = true;
+          console.warn('GitHub API rate limited at repo:', repo);
         }
-      } catch (e) {
-        // ignore individual failures
-      }
+      } catch (e) { /* ignore */ }
     }));
-    // Small delay between batches to avoid rate limiting
-    if (i + BATCH < repos.length) {
-      await new Promise(r => setTimeout(r, 300));
-    }
+    if (i + BATCH < repos.length) await new Promise(r => setTimeout(r, 250));
   }
 
   // Update papers with fetched star counts
@@ -230,7 +223,7 @@ async function fetchStarsForPapers(papers) {
     }
   }
 
-  console.log(`Stars fetched: ${Object.keys(starMap).length}/${repos.length} repos`);
+  console.log(`Stars fetched: ${Object.keys(starMap).length}/${repos.length} repos`, rateLimited ? '(rate limited)' : '');
 }
 
 // ===================== RENDER =====================
@@ -306,18 +299,16 @@ function getFilteredPapers() {
   } else if (sortMode === 'date_asc') {
     papers.sort((a, b) => a.dateNum - b.dateNum);
   } else if (sortMode === 'stars_desc') {
-    // papers with no star badge go to the end; -1 means "has badge but not fetched yet"
     papers.sort((a, b) => {
-      const sa = a.stars;
+      const sa = a.stars; // -1 = no data, 0+ = real count
       const sb = b.stars;
-      // no starRepo → very bottom
-      if (!a.starRepo && !b.starRepo) return 0;
-      if (!a.starRepo) return 1;
-      if (!b.starRepo) return -1;
-      // both have repo; -1 = unfetched, treat as 0 for now
-      const va = sa === -1 ? 0 : sa;
-      const vb = sb === -1 ? 0 : sb;
-      return vb - va;
+      // no starRepo or stars=-1 → sort to bottom
+      const hasA = a.starRepo && sa >= 0;
+      const hasB = b.starRepo && sb >= 0;
+      if (!hasA && !hasB) return 0;
+      if (!hasA) return 1;
+      if (!hasB) return -1;
+      return sb - sa; // descending
     });
   }
 
