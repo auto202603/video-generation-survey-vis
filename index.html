@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Generation Survey — Paper Explorer</title>
+  <meta name="description" content="An interactive explorer for the Video Generation Survey covering Video Generation, Editing in Diffusion, Multi-modality Generation, and Virtual Human.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📹</text></svg>">
+</head>
+<body>
+
+<!-- Progress bar for sync -->
+<div class="sync-progress">
+  <div class="sync-progress-bar"></div>
+</div>
+
+<!-- Top bar -->
+<header class="topbar">
+  <a class="topbar-brand" href="#">
+    <span class="logo-icon">📹</span>
+    <span class="brand-text">Video Gen Survey</span>
+  </a>
+
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input type="search" id="searchInput" placeholder="Search papers by title..."
+           oninput="onSearch(this.value)" autocomplete="off">
+  </div>
+
+  <div class="topbar-actions">
+    <select class="sort-select" id="sortSelect" onchange="onSortChange(this.value)" title="Sort papers">
+      <option value="date_desc">⬇ Newest first</option>
+      <option value="date_asc">⬆ Oldest first</option>
+      <option value="stars_desc">⭐ Most stars</option>
+    </select>
+
+    <button class="btn btn-primary" id="syncBtn" onclick="syncFromGitHub(true)">
+      🔄 Sync from GitHub
+    </button>
+
+    <span class="last-updated" id="lastUpdated"></span>
+  </div>
+</header>
+
+<!-- Layout -->
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <!-- Filled by JS -->
+    <div class="state-box" style="padding:40px 12px">
+      <div class="spinner"></div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="main">
+    <div class="main-header">
+      <div class="results-count" id="resultsCount">Loading…</div>
+    </div>
+
+    <div class="paper-list" id="paperList">
+      <div class="state-box">
+        <div class="spinner"></div>
+        <p>Fetching papers…</p>
+        <small>Loading from GitHub for the first time</small>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
