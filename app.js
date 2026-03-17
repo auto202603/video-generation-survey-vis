@@ -5,9 +5,10 @@
 
 // ===================== CONFIG =====================
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v5';
+const CACHE_KEY = 'vgs_data_v6';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const STARS_CACHE_KEY = 'vgs_stars_v1'; // repo -> starCount map
 
 const CATEGORIES = [
   {
@@ -47,6 +48,7 @@ let activeCats = new Set();   // selected category ids
 let activeSubsections = new Set(); // "catId::subsection"
 let searchQuery = '';
 let sortMode = 'date_desc';
+let starCacheMap = {}; // repo -> starCount, loaded from localStorage
 
 // ===================== PARSE MD =====================
 function parseMd(text, category) {
@@ -130,7 +132,7 @@ function parseMd(text, category) {
       pageUrl,
       starBadgeUrl,
       starRepo,
-      stars: -1, // loaded lazily
+      stars: 0, // will be resolved from starCacheMap at render time
     });
   }
 
@@ -139,6 +141,12 @@ function parseMd(text, category) {
 
 // ===================== FETCH DATA =====================
 async function fetchAllData(forceRefresh = false) {
+  // Load stars cache into memory
+  try {
+    const sc = localStorage.getItem(STARS_CACHE_KEY);
+    if (sc) starCacheMap = JSON.parse(sc);
+  } catch(e) { starCacheMap = {}; }
+
   // Try cache first
   if (!forceRefresh) {
     const cached = localStorage.getItem(CACHE_KEY);
@@ -146,6 +154,12 @@ async function fetchAllData(forceRefresh = false) {
     if (cached && ts && (Date.now() - parseInt(ts, 10)) < CACHE_TTL_MS) {
       try {
         const data = JSON.parse(cached);
+        // Resolve stars from starCacheMap
+        for (const p of data.papers) {
+          if (p.starRepo && starCacheMap[p.starRepo] !== undefined) {
+            p.stars = starCacheMap[p.starRepo];
+          }
+        }
         return data;
       } catch (e) {
         // cache corrupt, fall through
@@ -173,10 +187,9 @@ async function fetchAllData(forceRefresh = false) {
     setProgress(Math.round(((i + 1) / CATEGORIES.length) * 100));
   }
 
-  // Fetch GitHub stars from GitHub API.
-  // This only runs during Sync (forceRefresh=true path).
-  // Results are persisted in localStorage, so normal page loads
-  // read star counts directly from cache without any API calls.
+  // Fetch GitHub stars (only on forceRefresh/Sync).
+  // Results go into starCacheMap (persisted separately) and are also
+  // applied to papers.stars so sorting works immediately after sync.
   await fetchStarsForPapers(results.papers);
 
   // Cache
@@ -186,14 +199,15 @@ async function fetchAllData(forceRefresh = false) {
   return results;
 }
 
-// Fetch real star counts via GitHub API (unauthenticated, 60 req/hr).
-// Called ONLY during Sync (forceRefresh=true). Results are stored in the
-// localStorage cache alongside paper data, so subsequent page loads use
-// the cached star values without hitting the API at all.
+// Fetch GitHub star counts via GitHub API.
+// Called ONLY on Sync (forceRefresh=true).
+// 1. Fetches all unique repos in batches
+// 2. Updates global starCacheMap and persists to localStorage
+// 3. Applies star counts to papers.stars (integer) so sorting works immediately
 async function fetchStarsForPapers(papers) {
   const repos = [...new Set(papers.filter(p => p.starRepo).map(p => p.starRepo))];
-  const starMap = {};
-  const BATCH = 15; // concurrent requests per batch
+  const fetched = {};
+  const BATCH = 15;
   let rateLimited = false;
 
   for (let i = 0; i < repos.length; i += BATCH) {
@@ -206,24 +220,34 @@ async function fetchStarsForPapers(papers) {
         });
         if (resp.ok) {
           const data = await resp.json();
-          starMap[repo] = typeof data.stargazers_count === 'number' ? data.stargazers_count : 0;
+          const count = data.stargazers_count;
+          if (typeof count === 'number') fetched[repo] = count;
         } else if (resp.status === 403 || resp.status === 429) {
           rateLimited = true;
-          console.warn('GitHub API rate limited at repo:', repo);
+          console.warn('GitHub API rate limited at:', repo);
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) { /* ignore network errors */ }
     }));
     if (i + BATCH < repos.length) await new Promise(r => setTimeout(r, 250));
   }
 
-  // Update papers with fetched star counts
+  // Merge into global starCacheMap and persist
+  Object.assign(starCacheMap, fetched);
+  try {
+    localStorage.setItem(STARS_CACHE_KEY, JSON.stringify(starCacheMap));
+  } catch(e) { console.warn('Could not save stars cache', e); }
+
+  // Apply to papers (integer, not -1)
   for (const p of papers) {
-    if (p.starRepo && starMap[p.starRepo] !== undefined) {
-      p.stars = starMap[p.starRepo];
+    if (p.starRepo && starCacheMap[p.starRepo] !== undefined) {
+      p.stars = starCacheMap[p.starRepo]; // guaranteed integer >= 0
     }
   }
 
-  console.log(`Stars fetched: ${Object.keys(starMap).length}/${repos.length} repos`, rateLimited ? '(rate limited)' : '');
+  const total = repos.length;
+  const got = Object.keys(fetched).length;
+  console.log(`Stars: fetched ${got}/${total} repos${rateLimited ? ' (rate limited)' : ''}`);
+  if (got < total) console.log(`Stars: ${total - got} repos missing (no badge or API error)`);
 }
 
 // ===================== RENDER =====================
@@ -300,15 +324,14 @@ function getFilteredPapers() {
     papers.sort((a, b) => a.dateNum - b.dateNum);
   } else if (sortMode === 'stars_desc') {
     papers.sort((a, b) => {
-      const sa = a.stars; // -1 = no data, 0+ = real count
-      const sb = b.stars;
-      // no starRepo or stars=-1 → sort to bottom
-      const hasA = a.starRepo && sa >= 0;
-      const hasB = b.starRepo && sb >= 0;
-      if (!hasA && !hasB) return 0;
-      if (!hasA) return 1;
-      if (!hasB) return -1;
-      return sb - sa; // descending
+      // stars > 0: has real data; stars = 0 + no starRepo: no badge
+      // stars = 0 + has starRepo: either 0 stars or not yet fetched → treat as unknown, sort to bottom
+      const sa = (a.starRepo && a.stars > 0) ? a.stars : -1;
+      const sb = (b.starRepo && b.stars > 0) ? b.stars : -1;
+      if (sa === -1 && sb === -1) return 0;
+      if (sa === -1) return 1;  // a goes after b
+      if (sb === -1) return -1; // b goes after a
+      return sb - sa; // both positive: descending
     });
   }
 
@@ -443,7 +466,8 @@ async function syncFromGitHub(forceRefresh = true) {
     buildSidebar();
     renderPapers();
     updateLastUpdated();
-    showToast('✅ Synced successfully! ' + allPapers.length + ' papers loaded.');
+    const starsCount = Object.keys(starCacheMap).length;
+    showToast(`✅ Synced! ${allPapers.length} papers, ${starsCount} repos with stars.`);
   } catch (e) {
     showToast('❌ Sync failed: ' + e.message);
     console.error(e);
