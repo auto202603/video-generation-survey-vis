@@ -5,7 +5,7 @@
 
 // ===================== CONFIG =====================
 const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/yzhang2016/video-generation-survey/main/';
-const CACHE_KEY = 'vgs_data_v6';
+const CACHE_KEY = 'vgs_data_v7';
 const CACHE_TS_KEY = 'vgs_last_updated';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const STARS_CACHE_KEY = 'vgs_stars_v1'; // repo -> starCount map
@@ -119,6 +119,9 @@ function parseMd(text, category) {
     // Also skip lines where pdfUrl is empty and pageUrl is empty and no title content
     if (!pdfUrl && !pageUrl && title.length < 4) continue;
 
+    // Sanitize starRepo: reject placeholders like 'xxx', single words without '/'
+    const cleanStarRepo = (starRepo && starRepo.includes('/') && starRepo !== 'xxx') ? starRepo : '';
+
     papers.push({
       id: `${category.id}_${papers.length}`,
       title,
@@ -131,8 +134,8 @@ function parseMd(text, category) {
       pdfUrl,
       pageUrl,
       starBadgeUrl,
-      starRepo,
-      stars: 0, // will be resolved from starCacheMap at render time
+      starRepo: cleanStarRepo,
+      stars: 0, // resolved from starCacheMap at sort/render time
     });
   }
 
@@ -324,14 +327,13 @@ function getFilteredPapers() {
     papers.sort((a, b) => a.dateNum - b.dateNum);
   } else if (sortMode === 'stars_desc') {
     papers.sort((a, b) => {
-      // stars > 0: has real data; stars = 0 + no starRepo: no badge
-      // stars = 0 + has starRepo: either 0 stars or not yet fetched → treat as unknown, sort to bottom
-      const sa = (a.starRepo && a.stars > 0) ? a.stars : -1;
-      const sb = (b.starRepo && b.stars > 0) ? b.stars : -1;
+      // Always read from starCacheMap for freshest data (bypasses stale paper.stars)
+      const sa = (a.starRepo && starCacheMap[a.starRepo] > 0) ? starCacheMap[a.starRepo] : -1;
+      const sb = (b.starRepo && starCacheMap[b.starRepo] > 0) ? starCacheMap[b.starRepo] : -1;
       if (sa === -1 && sb === -1) return 0;
-      if (sa === -1) return 1;  // a goes after b
-      if (sb === -1) return -1; // b goes after a
-      return sb - sa; // both positive: descending
+      if (sa === -1) return 1;
+      if (sb === -1) return -1;
+      return sb - sa; // descending
     });
   }
 
@@ -537,6 +539,11 @@ async function init() {
   // Fresh fetch
   await syncFromGitHub(false);
 }
+
+// Clean up legacy cache keys on startup
+(function cleanLegacyCache() {
+  ['vgs_data_v1','vgs_data_v2','vgs_data_v3','vgs_data_v4','vgs_data_v5'].forEach(k => localStorage.removeItem(k));
+})();
 
 // Kick off on page load
 window.addEventListener('DOMContentLoaded', init);
